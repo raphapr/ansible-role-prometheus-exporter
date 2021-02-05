@@ -1,0 +1,172 @@
+#!/bin/sh
+### BEGIN INIT INFO
+# Provides: prometheus-{{ exporter_name }}
+# Required-Start:    $local_fs $network $named $time $syslog
+# Required-Stop:     $local_fs $network $named $time $syslog
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Description:       {{ exporter_name }} exporter for prometheus
+### END INIT INFO
+
+export DAEMON="{{ exporter_path }}"
+NAME="{{ exporter_name }}"
+USER=prometheus
+export PIDFILE=/var/run/prometheus/$NAME.pid
+export LOGFILE=/var/log/prometheus/$NAME.log
+export LOCKFILE=/var/lock/subsys/$NAME
+
+ARGS=""
+[ -r /etc/default/prometheus-$NAME ] && . /etc/default/prometheus-$NAME
+
+[ ! -d $(dirname $PIDFILE ) ] && mkdir -p $(dirname $PIDFILE )
+
+{% if ansible_os_family == "RedHat" %}
+# Source function library.
+. /etc/init.d/functions
+
+# Source config
+if [ -f /etc/sysconfig/$NAME ] ; then
+    . /etc/sysconfig/$NAME
+fi
+
+{% else %}
+
+{% endif %}
+
+do_start_prepare()
+{
+  mkdir -p `dirname $PIDFILE` || true
+  mkdir -p `dirname $LOGFILE` || true
+  chown -R $USER: `dirname $LOGFILE`
+  chown -R $USER: `dirname $PIDFILE`
+
+  [ -x $DAEMON ] || exit 5
+  umask 077
+}
+
+do_start_cmd()
+{
+  do_start_prepare
+  echo -n "Starting daemon: "$NAME
+
+{% if ansible_os_family == "RedHat" %}
+  # daemon --pidfile="$PIDFILE" -- $DAEMON $ARGS #daemon does not work
+
+  if [ -s ${PIDFILE} ]; then
+       RETVAL=1
+       echo -n "Already running !" && warning
+       echo
+  else
+     nohup ${DAEMON} ${ARGS} >/dev/null 2>&1 &
+     RETVAL=$?
+     [ $RETVAL -eq 0 ] && touch ${LOCKFILE} && success || failure
+     echo
+     #echo $PID > ${PIDFILE}
+     pidof $DAEMON > ${PIDFILE}
+  fi
+
+  #echo
+  #[ $RETVAL -eq 0 ] && touch $LOCKFILE
+  #_PID=$(ps aux |grep $DAEMON |grep -v grep |awk '{print$2}' |tr '\n' ' ' > $PIDFILE)
+  #pidof $DAEMON > $PIDFILE
+  #ps aux |grep $DAEMON |grep -v grep |awk '{print$2}' |tr '\n' ' ' > $PIDFILE
+  RETVAL=$?
+  return $RETVAL
+{% else %}
+  start-stop-daemon --chuid $USER -C --background --start --quiet --pidfile $PIDFILE --make-pidfile --exec $DAEMON -- $ARGS >> $LOGFILE 2>&1
+  echo "."
+{% endif %}
+}
+
+do_stop_cmd()
+{
+  echo -n "Stopping daemon: "$NAME
+{% if ansible_os_family == "RedHat" %}
+  killproc -p "$PIDFILE" $DAEMON
+  RETVAL=$?
+  echo
+  [ $RETVAL -eq 0 ] && rm -f $LOCKFILE
+  return $RETVAL
+{% else %}
+  start-stop-daemon --stop --quiet --oknodo --pidfile $PIDFILE
+  rm $PIDFILE
+  echo "."
+{% endif %}
+}
+
+do_restart_cmd()
+{
+  echo -n "Restarting daemon: "$NAME
+  do_stop_cmd
+  do_start_cmd
+	echo "."
+}
+
+uninstall() {
+  echo -n "Are you really sure you want to uninstall this service? That cannot be undone. [yes|No] "
+  local SURE
+  read SURE
+  if [ "$SURE" = "yes" ]; then
+    stop
+    rm -f "$PIDFILE"
+    echo "Notice: log file was not removed: '$LOGFILE'" >&2
+    update-rc.d -f <NAME> remove
+    rm -fv "$0"
+  fi
+}
+
+status() {
+  printf "%-50s" "Checking $NAME..."
+{% if ansible_os_family == "RedHat" %}
+  if [ -f $PIDFILE ]; then
+    PID=$(cat $PIDFILE)
+    if [ -z "$(ps axf | grep ${PID} | grep -v grep)" ]; then
+      printf "%s\n" "The process appears to be dead but pidfile still exists"
+    else
+      echo "Running, the PID is $PID"
+    fi
+  else
+    printf "%s\n" "Service not running"
+  fi
+{% else %}
+  start-stop-daemon --status --chuid $USER -C --background --quiet --pidfile $PIDFILE --exec $DAEMON -- $ARGS >> $LOGFILE 2>&1
+  if [ -f $PIDFILE ]; then
+    PID=$(cat $PIDFILE)
+    if [ -z "$(ps axf | grep ${PID} | grep -v grep)" ]; then
+      printf "%s\n" "The process appears to be dead but pidfile still exists"
+    else
+      echo "Running, the PID is $PID"
+    fi
+  else
+    printf "%s\n" "Service not running"
+  fi
+{% endif %}
+}
+
+
+case "$1" in
+  start)
+    do_start_cmd
+    ;;
+  stop)
+    do_stop_cmd
+    ;;
+  restart)
+    do_restart_cmd
+    ;;
+  status)
+    status
+    ;;
+  uninstall)
+    uninstall
+    ;;
+  restart)
+    stop
+    start
+    ;;
+  *)
+    echo "Usage: $1 {start|stop|status|restart|uninstall}"
+    exit 1
+esac
+
+exit 0

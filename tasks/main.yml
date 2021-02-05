@@ -1,0 +1,12 @@
+---
+- name: "Ensure {{ prometheus_exporter_path }} dir exists"
+  file:
+    path: "{{ prometheus_exporter_path }}"
+    mode: 0755
+    state: directory
+
+- name: install generic prometheus exporters
+  include: "exporter.yml"
+  with_items: "{{ prometheus_exporter_list }}"
+  loop_control:
+    loop_var: item_e

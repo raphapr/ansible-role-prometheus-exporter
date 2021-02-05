@@ -1,0 +1,137 @@
+---
+- name: "exporter | {{ item_e.name }} | set facts"
+  set_fact:
+    exporter_name: "{{ item_e.name }}"
+    exporter_url: "{{ item_e.url }}"
+    exporter_user: "{{ item_e.user |d('root') }}"
+    exporter_group: "{{ item_e.group |d('root') }}"
+    exporter_path: "{{ item_e.path | d(prometheus_exporter_path+'/'+item_e.name) }}"
+    exporter_args: "{{ item_e.args |d(none) }}"
+    exporter_envs: "{{ item_e.envs |d(none) }}"
+    exporter_unpack: "{{ item_e.unpack | d(false) }}"
+    exporter_service: "prometheus-{{ item_e.name }}"
+
+- name: "exporter | {{ exporter_name }} | check if bin exists"
+  stat:
+    path: "{{ exporter_path }}"
+  register: exporter_binary
+
+- block:
+
+  - name: "exporter | {{ exporter_name }} | download"
+    get_url:
+      url: "{{ exporter_url }}"
+      dest: "/tmp/prom-exporter-installer.{{ exporter_name }}"
+      owner: "{{ exporter_user }}"
+    register: ret_download
+
+
+  - block:
+    - name: "exporter | {{ exporter_name }} | extract"
+      unarchive:
+        src: "/tmp/prom-exporter-installer.{{ exporter_name }}"
+        dest: "/tmp"
+        owner: "{{ exporter_user }}"
+        remote_src: yes
+
+    - name: "exporter | {{ exporter_name }} | copy binary"
+      copy:
+        src: "{{ item_e.unpack_path_tmp }}"
+        dest: "{{ exporter_path }}"
+        owner: "{{ exporter_user }}"
+        group: root
+        remote_src: yes
+        mode: 0755
+      when:
+        - not ansible_check_mode
+    when:
+      - (not ansible_check_mode)
+      - item_e.unpack is defined
+      - item_e.unpack_path_tmp is defined
+      - item_e.unpack
+
+  - name: "exporter | {{ exporter_name }} | copy binary"
+    copy:
+      src: "/tmp/prom-exporter-installer.{{ exporter_name }}"
+      dest: "{{ exporter_path }}"
+      owner: "{{ exporter_user }}"
+      group: root
+      remote_src: yes
+      mode: 0755
+    when:
+      - item_e.unpack is not defined or not(item_e.unpack)
+      - not ansible_check_mode
+
+  - name: "exporter | {{ exporter_name }} | clean up"
+    file:
+      path: "{{ item }}"
+      state: absent
+    with_items:
+      - "/tmp/prom-exporter-installer.{{ exporter_name }}*"
+
+  when: not exporter_binary.stat.exists
+
+- name: "exporter | {{ exporter_name }} | create config files"
+  copy:
+    dest: "{{ item.path }}"
+    src: "{{ item.src |d(omit) }}"
+    content: "{{ item.content |d(omit) }}"
+    unsafe_writes: "{{ item.unsafe_writes |d(omit) }}"
+  with_items: "{{ item_e.config_files }}"
+  register: ret_conf
+  when: item_e.config_files is defined
+
+
+- name: "exporter | {{ exporter_name }} | upstart script"
+  template:
+    src: "{{ item.name }}"
+    dest: "{{ item.path }}"
+    owner: "{{ exporter_user }}"
+    group: root
+    mode: 0755
+  when: ansible_service_mgr == 'upstart'
+  register: ret_conf
+  with_items:
+  - name: initd-exporter.sh.j2
+    path: /etc/init.d/{{ exporter_service }}
+  - name: initd-exporter-default.j2
+    path: /etc/default/{{ exporter_service }}
+
+- block:
+
+  - name: "exporter | {{ exporter_name }} | systemd unit file"
+    template:
+      src: systemd-unit-file.j2
+      dest: /lib/systemd/system/{{ exporter_service }}.service
+      owner: root
+      group: root
+      mode: 0644
+    register: ret_conf
+
+  - name: "exporter | {{ exporter_name }} | systemd env file"
+    template:
+      src: systemd-env-file.j2
+      dest: /etc/default/prometheus-{{ exporter_name }}
+      owner: root
+      group: root
+      mode: 0644
+    register: ret_env
+    when: item_e.envs is defined
+
+  - name: "exporter | {{ exporter_name  }} | reload service"
+    systemd:
+      daemon_reload: yes
+
+  when: ansible_service_mgr == 'systemd'
+
+- name: "exporter | {{ exporter_name  }} | enable service"
+  service:
+    name: "{{ exporter_service }}"
+    state: started
+    enabled: yes
+
+- name: "exporter | {{ exporter_name  }} | restart service"
+  service:
+    name: "{{ exporter_service }}"
+    state: restarted
+  when: (ret_conf is changed) or (ret_env is defined and ret_env is changed)
